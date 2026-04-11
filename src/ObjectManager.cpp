@@ -11,7 +11,7 @@ ObjectManager::ObjectManager(std::shared_ptr<Connection> conn, const std::string
 ObjectManager::~ObjectManager() = default;
 
 std::shared_ptr<ObjectManager> ObjectManager::create(std::shared_ptr<Connection> conn,
-                                                      const std::string& rootPath) {
+    const std::string& rootPath) {
     auto self = std::shared_ptr<ObjectManager>(new ObjectManager(std::move(conn), rootPath));
 
     // Create root object that implements ObjectManager interface
@@ -70,7 +70,9 @@ void ObjectManager::removeChild(const std::string& path) {
     // Unregister the path
     try {
         conn_->unregisterObjectPath(path);
-    } catch (...) {}
+    } catch (...) {
+        MBEDBUS_LOG("Failed to unregister path: %s", path.c_str());
+    }
 
     MBEDBUS_LOG("Removed child: %s", path.c_str());
 }
@@ -133,7 +135,7 @@ void ObjectManager::updateChildNodes() {
         std::string childPath = kv.first;
         auto pos = childPath.rfind('/');
         if (pos != std::string::npos && pos + 1 < childPath.size()) {
-            childNames.push_back(childPath.substr(pos + 1));
+            childNames.emplace_back(childPath.substr(pos + 1));
         }
     }
     rootObject_->setChildNodes(childNames);

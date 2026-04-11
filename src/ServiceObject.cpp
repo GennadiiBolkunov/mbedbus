@@ -15,12 +15,14 @@ ServiceObject::~ServiceObject() {
     if (finalized_ && conn_) {
         try {
             conn_->unregisterObjectPath(path_);
-        } catch (...) {}
+        } catch (...) {
+            MBEDBUS_LOG("Failed to unregister path in ~ServiceObject: %s", path_.c_str());
+        }
     }
 }
 
 std::shared_ptr<ServiceObject> ServiceObject::create(std::shared_ptr<Connection> conn,
-                                                      const std::string& path) {
+    const std::string& path) {
     return std::shared_ptr<ServiceObject>(new ServiceObject(std::move(conn), path));
 }
 
@@ -83,7 +85,7 @@ Message ServiceObject::handleMessage(const Message& msg) {
 
     if (!member) {
         return Message::createError(msg, "org.freedesktop.DBus.Error.Failed",
-                                    "No member specified");
+            "No member specified");
     }
 
     // Standard interfaces
@@ -114,7 +116,7 @@ Message ServiceObject::handleMethodCall(const Message& msg) {
 
     if (!member) {
         return Message::createError(msg, "org.freedesktop.DBus.Error.UnknownMethod",
-                                    "No method specified");
+            "No method specified");
     }
 
     std::string memberStr(member);
@@ -155,7 +157,7 @@ Message ServiceObject::handleMethodCall(const Message& msg) {
     }
 
     return Message::createError(msg, "org.freedesktop.DBus.Error.UnknownMethod",
-                                std::string("Unknown method: ") + memberStr);
+        std::string("Unknown method: ") + memberStr);
 }
 
 Message ServiceObject::handlePropertiesGet(const Message& msg) {
@@ -274,8 +276,8 @@ Message ServiceObject::handlePeerGetMachineId(const Message& msg) {
 }
 
 DBusHandlerResult ServiceObject::messageHandler(DBusConnection* /*conn*/,
-                                                  DBusMessage* rawMsg,
-                                                  void* data) {
+    DBusMessage* rawMsg,
+    void* data) {
     auto* self = static_cast<ServiceObject*>(data);
 
     if (dbus_message_get_type(rawMsg) != DBUS_MESSAGE_TYPE_METHOD_CALL) {

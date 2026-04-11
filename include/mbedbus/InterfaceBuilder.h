@@ -100,7 +100,7 @@ auto apply(F&& f, Tuple&& t)
                           std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{}))
 {
     return applyImpl(std::forward<F>(f), std::forward<Tuple>(t),
-                     std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{});
+        std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{});
 }
 
 // Build input signatures from Args tuple
@@ -109,8 +109,8 @@ std::vector<std::pair<std::string, std::string>> buildArgInfoImpl(std::index_seq
     std::vector<std::pair<std::string, std::string>> result;
     // We use generic arg names
     using dummy = int[];
-    (void)dummy{0, (result.push_back({"arg" + std::to_string(I),
-        types::Traits<typename std::tuple_element<I, Tuple>::type>::signature()}), 0)...};
+    (void)dummy{0, (result.emplace_back(std::make_pair("arg" + std::to_string(I),
+        types::Traits<typename std::tuple_element<I, Tuple>::type>::signature())), 0)...};
     return result;
 }
 
@@ -275,8 +275,8 @@ private:
     buildInArgs(std::index_sequence<I...>) {
         std::vector<std::pair<std::string, std::string>> result;
         using dummy = int[];
-        (void)dummy{0, (result.push_back({"arg" + std::to_string(I),
-            types::Traits<typename std::tuple_element<I, Tuple>::type>::signature()}), 0)...};
+        (void)dummy{0, (result.emplace_back(std::make_pair("arg" + std::to_string(I),
+            types::Traits<typename std::tuple_element<I, Tuple>::type>::signature())), 0)...};
         return result;
     }
 

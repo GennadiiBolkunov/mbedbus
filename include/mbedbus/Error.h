@@ -4,6 +4,7 @@
 #ifndef MBEDBUS_ERROR_H
 #define MBEDBUS_ERROR_H
 
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -39,23 +40,31 @@ template<typename T>
 class Expected {
 public:
     /// @brief Construct with a value.
-    Expected(const T& value) : hasValue_(true) { new (&storage_) T(value); }
+    Expected(const T& value) : hasValue_(true), storage_{}, errStorage_{} {
+        new (&storage_) T(value);
+    }
 
     /// @brief Construct with a moved value.
-    Expected(T&& value) : hasValue_(true) { new (&storage_) T(std::move(value)); }
+    Expected(T&& value) : hasValue_(true), storage_{}, errStorage_{} {
+        new (&storage_) T(std::move(value));
+    }
 
     /// @brief Construct with an error.
-    Expected(const Error& err) : hasValue_(false) { new (&errStorage_) Error(err); }
+    Expected(const Error& err) : hasValue_(false), storage_{}, errStorage_{} {
+        new (&errStorage_) Error(err);
+    }
 
     /// @brief Construct with a moved error.
-    Expected(Error&& err) : hasValue_(false) { new (&errStorage_) Error(std::move(err)); }
+    Expected(Error&& err) : hasValue_(false), storage_{}, errStorage_{} {
+        new (&errStorage_) Error(std::move(err));
+    }
 
-    Expected(const Expected& o) : hasValue_(o.hasValue_) {
+    Expected(const Expected& o) : hasValue_(o.hasValue_), storage_{}, errStorage_{} {
         if (hasValue_) new (&storage_) T(o.valueRef());
         else new (&errStorage_) Error(o.errorRef());
     }
 
-    Expected(Expected&& o) noexcept : hasValue_(o.hasValue_) {
+    Expected(Expected&& o) noexcept : hasValue_(o.hasValue_), storage_{}, errStorage_{} {
         if (hasValue_) new (&storage_) T(std::move(o.valueRef()));
         else new (&errStorage_) Error(std::move(o.errorRef()));
     }
@@ -151,7 +160,7 @@ public:
 
 private:
     bool hasValue_;
-    Error error_{""}; // default-constructed, unused if hasValue_
+    Error error_{""};
 };
 
 } // namespace mbedbus

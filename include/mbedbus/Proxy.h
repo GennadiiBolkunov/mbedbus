@@ -30,9 +30,9 @@ public:
     /// @param objectPath The object path.
     /// @param interface The default interface for method calls.
     static std::shared_ptr<Proxy> create(std::shared_ptr<Connection> conn,
-                                          const std::string& destination,
-                                          const std::string& objectPath,
-                                          const std::string& interface);
+        const std::string& destination,
+        const std::string& objectPath,
+        const std::string& interface);
 
     ~Proxy();
 
@@ -73,23 +73,17 @@ public:
     /// @brief Call a method asynchronously, invoking callback with the result.
     template<typename R, typename... Args>
     void callAsync(const std::string& method,
-                   std::function<void(Expected<R>)> callback,
-                   const Args&... args) {
+        std::function<void(Expected<R>)> callback,
+        const Args&... args) {
         Message msg = Message::createMethodCall(dest_, path_, iface_, method);
         msg.appendArgs(args...);
         conn_->sendWithReplyAsync(msg,
             [callback](Message reply) {
                 if (reply.isError()) {
                     const char* ename = reply.errorName();
-                    DBusError err;
-                    dbus_error_init(&err);
-                    dbus_set_error(&err, ename ? ename : "unknown",
-                                   "%s", reply.path() ? reply.path() : "");
-                    // Read error message from body
                     std::string errMsg;
                     try { errMsg = reply.readArg<std::string>(); }
                     catch (...) { errMsg = ename ? ename : "Unknown error"; }
-                    dbus_error_free(&err);
                     callback(Expected<R>(Error(ename ? ename : "unknown", errMsg)));
                 } else {
                     try {
@@ -138,10 +132,10 @@ public:
     /// @brief Subscribe to a signal on the default interface.
     template<typename... Args>
     void onSignal(const std::string& signalName,
-                  std::function<void(Args...)> handler) {
+        std::function<void(Args...)> handler) {
         std::string matchRule = "type='signal',sender='" + dest_ +
-            "',path='" + path_ + "',interface='" + iface_ +
-            "',member='" + signalName + "'";
+                                "',path='" + path_ + "',interface='" + iface_ +
+                                "',member='" + signalName + "'";
         conn_->addMatch(matchRule);
         matchRules_.push_back(matchRule);
 
@@ -176,18 +170,18 @@ public:
     /// @brief Subscribe to PropertiesChanged signal.
     void onPropertiesChanged(
         std::function<void(const std::string& iface,
-                           const std::map<std::string, Variant>& changed,
-                           const std::vector<std::string>& invalidated)> handler);
+            const std::map<std::string, Variant>& changed,
+            const std::vector<std::string>& invalidated)> handler);
 
     /// @brief Subscribe to InterfacesAdded signal (ObjectManager).
     void onInterfacesAdded(
         std::function<void(const ObjectPath& path,
-                           const std::map<std::string, std::map<std::string, Variant>>& ifaces)> handler);
+            const std::map<std::string, std::map<std::string, Variant>>& ifaces)> handler);
 
     /// @brief Subscribe to InterfacesRemoved signal (ObjectManager).
     void onInterfacesRemoved(
         std::function<void(const ObjectPath& path,
-                           const std::vector<std::string>& ifaces)> handler);
+            const std::vector<std::string>& ifaces)> handler);
 
     /// @brief Call GetManagedObjects on the remote ObjectManager.
     std::map<ObjectPath, std::map<std::string, std::map<std::string, Variant>>>
@@ -198,14 +192,14 @@ public:
 
 private:
     Proxy(std::shared_ptr<Connection> conn,
-          const std::string& destination,
-          const std::string& objectPath,
-          const std::string& interface);
+        const std::string& destination,
+        const std::string& objectPath,
+        const std::string& interface);
 
     template<typename... Args, std::size_t... I>
     static void applyHandler(const std::function<void(Args...)>& handler,
-                             std::tuple<Args...>&& args,
-                             std::index_sequence<I...>) {
+        std::tuple<Args...>&& args,
+        std::index_sequence<I...>) {
         handler(std::get<I>(std::move(args))...);
     }
 

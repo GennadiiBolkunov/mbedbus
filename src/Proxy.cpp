@@ -4,9 +4,9 @@
 namespace mbedbus {
 
 Proxy::Proxy(std::shared_ptr<Connection> conn,
-             const std::string& destination,
-             const std::string& objectPath,
-             const std::string& interface)
+    const std::string& destination,
+    const std::string& objectPath,
+    const std::string& interface)
     : conn_(std::move(conn))
     , dest_(destination)
     , path_(objectPath)
@@ -18,16 +18,18 @@ Proxy::~Proxy() {
     for (auto& rule : matchRules_) {
         try {
             conn_->removeMatch(rule);
-        } catch (...) {}
+        } catch (...) {
+            MBEDBUS_LOG("Failed to remove match rule during Proxy destruction");
+        }
     }
 }
 
 std::shared_ptr<Proxy> Proxy::create(std::shared_ptr<Connection> conn,
-                                      const std::string& destination,
-                                      const std::string& objectPath,
-                                      const std::string& interface) {
+    const std::string& destination,
+    const std::string& objectPath,
+    const std::string& interface) {
     return std::shared_ptr<Proxy>(new Proxy(std::move(conn), destination,
-                                            objectPath, interface));
+        objectPath, interface));
 }
 
 std::map<std::string, Variant> Proxy::getAllProperties() {
@@ -40,15 +42,15 @@ std::map<std::string, Variant> Proxy::getAllProperties() {
 
 void Proxy::onPropertiesChanged(
     std::function<void(const std::string&,
-                       const std::map<std::string, Variant>&,
-                       const std::vector<std::string>&)> handler)
+        const std::map<std::string, Variant>&,
+        const std::vector<std::string>&)> handler)
 {
     std::string matchRule = "type='signal',sender='" + dest_ +
-        "',path='" + path_ +
-        "',interface='org.freedesktop.DBus.Properties'"
-        ",member='PropertiesChanged'";
+                            "',path='" + path_ +
+                            "',interface='org.freedesktop.DBus.Properties'"
+                            ",member='PropertiesChanged'";
     conn_->addMatch(matchRule);
-    matchRules_.push_back(matchRule);
+    matchRules_.emplace_back(matchRule);
 
     std::string myPath = path_;
     conn_->addFilter([handler, myPath](const Message& msg) -> bool {
@@ -63,23 +65,27 @@ void Proxy::onPropertiesChanged(
 
         try {
             auto args = msg.readArgs<std::string,
-                                      std::map<std::string, Variant>,
-                                      std::vector<std::string>>();
+                std::map<std::string, Variant>,
+                std::vector<std::string>>();
             handler(std::get<0>(args), std::get<1>(args), std::get<2>(args));
-        } catch (...) {}
+        } catch (const std::exception& e) {
+            MBEDBUS_LOG("PropertiesChanged handler error: %s", e.what());
+        } catch (...) {
+            MBEDBUS_LOG("PropertiesChanged handler: unknown error");
+        }
         return false;
     });
 }
 
 void Proxy::onInterfacesAdded(
     std::function<void(const ObjectPath&,
-                       const std::map<std::string, std::map<std::string, Variant>>&)> handler)
+        const std::map<std::string, std::map<std::string, Variant>>&)> handler)
 {
     std::string matchRule = "type='signal',sender='" + dest_ +
-        "',interface='org.freedesktop.DBus.ObjectManager'"
-        ",member='InterfacesAdded'";
+                            "',interface='org.freedesktop.DBus.ObjectManager'"
+                            ",member='InterfacesAdded'";
     conn_->addMatch(matchRule);
-    matchRules_.push_back(matchRule);
+    matchRules_.emplace_back(matchRule);
 
     conn_->addFilter([handler](const Message& msg) -> bool {
         if (msg.type() != DBUS_MESSAGE_TYPE_SIGNAL) return false;
@@ -93,20 +99,24 @@ void Proxy::onInterfacesAdded(
             auto args = msg.readArgs<ObjectPath,
                 std::map<std::string, std::map<std::string, Variant>>>();
             handler(std::get<0>(args), std::get<1>(args));
-        } catch (...) {}
+        } catch (const std::exception& e) {
+            MBEDBUS_LOG("InterfacesAdded handler error: %s", e.what());
+        } catch (...) {
+            MBEDBUS_LOG("InterfacesAdded handler: unknown error");
+        }
         return false;
     });
 }
 
 void Proxy::onInterfacesRemoved(
     std::function<void(const ObjectPath&,
-                       const std::vector<std::string>&)> handler)
+        const std::vector<std::string>&)> handler)
 {
     std::string matchRule = "type='signal',sender='" + dest_ +
-        "',interface='org.freedesktop.DBus.ObjectManager'"
-        ",member='InterfacesRemoved'";
+                            "',interface='org.freedesktop.DBus.ObjectManager'"
+                            ",member='InterfacesRemoved'";
     conn_->addMatch(matchRule);
-    matchRules_.push_back(matchRule);
+    matchRules_.emplace_back(matchRule);
 
     conn_->addFilter([handler](const Message& msg) -> bool {
         if (msg.type() != DBUS_MESSAGE_TYPE_SIGNAL) return false;
@@ -119,7 +129,11 @@ void Proxy::onInterfacesRemoved(
         try {
             auto args = msg.readArgs<ObjectPath, std::vector<std::string>>();
             handler(std::get<0>(args), std::get<1>(args));
-        } catch (...) {}
+        } catch (const std::exception& e) {
+            MBEDBUS_LOG("InterfacesRemoved handler error: %s", e.what());
+        } catch (...) {
+            MBEDBUS_LOG("InterfacesRemoved handler: unknown error");
+        }
         return false;
     });
 }

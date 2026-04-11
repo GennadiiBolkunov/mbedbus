@@ -1,3 +1,4 @@
+#include <cmath>
 #include <gtest/gtest.h>
 #include <mbedbus/mbedbus.h>
 #include <dbus/dbus.h>
@@ -63,13 +64,13 @@ TEST(TypeTraits, UInt64) {
 
 TEST(TypeTraits, Double) {
     EXPECT_EQ(Traits<double>::signature(), "d");
-    EXPECT_DOUBLE_EQ(roundTrip(3.14159), 3.14159);
+    EXPECT_DOUBLE_EQ(roundTrip(M_PI), M_PI);
 }
 
 TEST(TypeTraits, String) {
     EXPECT_EQ(Traits<std::string>::signature(), "s");
     EXPECT_EQ(roundTrip(std::string("hello world")), "hello world");
-    EXPECT_EQ(roundTrip(std::string("")), "");
+    EXPECT_EQ(roundTrip(std::string()), "");
 }
 
 TEST(TypeTraits, ObjectPath) {
