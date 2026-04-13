@@ -68,7 +68,14 @@ std::map<std::string, Variant> ServiceObject::getAllProperties(const std::string
     if (it == interfaces_.end()) return result;
     for (auto& prop : it->second.properties) {
         if (prop.readable && prop.getter) {
-            result[prop.name] = prop.getter();
+            try {
+                result[prop.name] = prop.getter();
+            } catch (const Error& e) {
+                // Property getter signalled an error — skip this property
+                MBEDBUS_LOG("Property '%s' getter threw: %s", prop.name.c_str(), e.message().c_str());
+            } catch (const std::exception& e) {
+                MBEDBUS_LOG("Property '%s' getter threw: %s", prop.name.c_str(), e.what());
+            }
         }
     }
     return result;
@@ -180,10 +187,17 @@ Message ServiceObject::handlePropertiesGet(const Message& msg) {
                     "org.freedesktop.DBus.Error.Failed",
                     "Property is not readable: " + propName);
             }
-            Variant v = prop.getter();
-            Message reply = Message::createMethodReturn(msg);
-            reply.appendArgs(v);
-            return reply;
+            try {
+                Variant v = prop.getter();
+                Message reply = Message::createMethodReturn(msg);
+                reply.appendArgs(v);
+                return reply;
+            } catch (const Error& e) {
+                return Message::createError(msg, e.name(), e.message());
+            } catch (const std::exception& e) {
+                return Message::createError(msg,
+                    "org.freedesktop.DBus.Error.Failed", e.what());
+            }
         }
     }
 
@@ -237,6 +251,7 @@ Message ServiceObject::handlePropertiesSet(const Message& msg) {
 Message ServiceObject::handlePropertiesGetAll(const Message& msg) {
     std::string ifaceName = msg.readArg<std::string>();
 
+    // getAllProperties already catches exceptions per-property
     auto props = getAllProperties(ifaceName);
 
     Message reply = Message::createMethodReturn(msg);
@@ -260,7 +275,6 @@ Message ServiceObject::handlePeerGetMachineId(const Message& msg) {
     std::ifstream f("/etc/machine-id");
     if (f.is_open()) {
         std::getline(f, machineId);
-        // Remove trailing whitespace/newline
         while (!machineId.empty() &&
                (machineId.back() == '\n' || machineId.back() == '\r' ||
                 machineId.back() == ' ')) {
@@ -287,10 +301,39 @@ DBusHandlerResult ServiceObject::messageHandler(DBusConnection* /*conn*/,
     Message msg(rawMsg);
     dbus_message_ref(rawMsg); // msg will unref
 
-    Message reply = self->handleMessage(msg);
-    if (reply) {
-        dbus_connection_send(self->conn_->raw(), reply.raw(), nullptr);
-        dbus_connection_flush(self->conn_->raw());
+    // Top-level safety barrier: no C++ exception must escape into libdbus C code.
+    // We use raw dbus calls in catch blocks because Message::createError itself
+    // could throw if out of memory.
+    try {
+        Message reply = self->handleMessage(msg);
+        if (reply) {
+            dbus_connection_send(self->conn_->raw(), reply.raw(), nullptr);
+            dbus_connection_flush(self->conn_->raw());
+        }
+    } catch (const Error& e) {
+        DBusMessage* errReply = dbus_message_new_error(
+            rawMsg, e.name().c_str(), e.message().c_str());
+        if (errReply) {
+            dbus_connection_send(self->conn_->raw(), errReply, nullptr);
+            dbus_connection_flush(self->conn_->raw());
+            dbus_message_unref(errReply);
+        }
+    } catch (const std::exception& e) {
+        DBusMessage* errReply = dbus_message_new_error(
+            rawMsg, "org.freedesktop.DBus.Error.Failed", e.what());
+        if (errReply) {
+            dbus_connection_send(self->conn_->raw(), errReply, nullptr);
+            dbus_connection_flush(self->conn_->raw());
+            dbus_message_unref(errReply);
+        }
+    } catch (...) {
+        DBusMessage* errReply = dbus_message_new_error(
+            rawMsg, "org.freedesktop.DBus.Error.Failed", "Unknown internal error");
+        if (errReply) {
+            dbus_connection_send(self->conn_->raw(), errReply, nullptr);
+            dbus_connection_flush(self->conn_->raw());
+            dbus_message_unref(errReply);
+        }
     }
 
     return DBUS_HANDLER_RESULT_HANDLED;

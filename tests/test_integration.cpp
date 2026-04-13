@@ -183,3 +183,99 @@ TEST_F(IntegrationTest, NestedContainers) {
 
     srv.join();
 }
+TEST_F(IntegrationTest, PropertyGetterThrowsError) {
+    auto srvConn = mbedbus::Connection::createPrivate(address_);
+    srvConn->requestName("com.mbedbus.PropErr");
+
+    bool initialized = false;
+    int32_t value = 0;
+
+    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
+    obj->addInterface("com.mbedbus.PropErr")
+        .addProperty("Value",
+            [&]() -> int32_t {
+                if (!initialized)
+                    throw mbedbus::Error("com.example.NotReady", "Value not set yet");
+                return value;
+            },
+            [&](int32_t v) { value = v; initialized = true; })
+        .addProperty("AlwaysOk", []() -> std::string { return "ok"; });
+    obj->finalize();
+
+    std::thread srv([&] {
+        for (int i = 0; i < 100; ++i) srvConn->processPendingEvents(20);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto cliConn = mbedbus::Connection::createPrivate(address_);
+    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.PropErr",
+                                         "/test", "com.mbedbus.PropErr");
+
+    // Single Get on uninitialized property — must return D-Bus error
+    EXPECT_THROW(proxy->getProperty<int32_t>("Value"), mbedbus::Error);
+
+    // Verify the error name propagates correctly
+    try {
+        proxy->getProperty<int32_t>("Value");
+        FAIL() << "Expected exception";
+    } catch (const mbedbus::Error& e) {
+        EXPECT_EQ(e.name(), "com.example.NotReady");
+    }
+
+    // GetAll should skip the erroring property but still return AlwaysOk
+    auto allProps = proxy->getAllProperties();
+    EXPECT_EQ(allProps.count("AlwaysOk"), 1u);
+    EXPECT_EQ(allProps["AlwaysOk"].get<std::string>(), "ok");
+    EXPECT_EQ(allProps.count("Value"), 0u);
+
+    // Set the value, making it initialized
+    proxy->setProperty("Value", int32_t(42));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Now Get should succeed
+    EXPECT_EQ(proxy->getProperty<int32_t>("Value"), 42);
+
+    // GetAll should now include both properties
+    allProps = proxy->getAllProperties();
+    EXPECT_EQ(allProps.size(), 2u);
+    EXPECT_EQ(allProps["Value"].get<int32_t>(), 42);
+
+    srv.join();
+}
+
+TEST_F(IntegrationTest, PropertySetterThrowsError) {
+    auto srvConn = mbedbus::Connection::createPrivate(address_);
+    srvConn->requestName("com.mbedbus.SetErr");
+
+    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
+    obj->addInterface("com.mbedbus.SetErr")
+        .addProperty("Positive",
+            []() -> int32_t { return 1; },
+            [](int32_t v) {
+                if (v <= 0)
+                    throw mbedbus::Error("com.example.InvalidValue", "Must be positive");
+            });
+    obj->finalize();
+
+    std::thread srv([&] {
+        for (int i = 0; i < 50; ++i) srvConn->processPendingEvents(20);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto cliConn = mbedbus::Connection::createPrivate(address_);
+    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.SetErr",
+                                         "/test", "com.mbedbus.SetErr");
+
+    EXPECT_NO_THROW(proxy->setProperty("Positive", int32_t(5)));
+
+    EXPECT_THROW(proxy->setProperty("Positive", int32_t(-1)), mbedbus::Error);
+
+    try {
+        proxy->setProperty("Positive", int32_t(0));
+        FAIL() << "Expected exception";
+    } catch (const mbedbus::Error& e) {
+        EXPECT_EQ(e.name(), "com.example.InvalidValue");
+    }
+
+    srv.join();
+}
