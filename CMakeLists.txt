@@ -11,6 +11,12 @@ pkg_check_modules(DBUS REQUIRED dbus-1)
 option(MBEDBUS_BUILD_TESTS "Build tests" ON)
 option(MBEDBUS_BUILD_EXAMPLES "Build examples" ON)
 option(MBEDBUS_ENABLE_LOGGING "Enable debug logging" OFF)
+option(MBEDBUS_USE_SANITIZERS "Build with sanitizers" OFF)
+
+if (MBEDBUS_USE_SANITIZERS)
+    add_compile_options(-fsanitize=address -fsanitize=undefined)
+    add_link_options(-fsanitize=address -fsanitize=undefined)
+endif()
 
 add_library(mbedbus
     src/Connection.cpp
