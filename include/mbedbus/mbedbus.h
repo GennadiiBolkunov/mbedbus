@@ -15,5 +15,7 @@
 #include "ServiceObject.h"
 #include "ObjectManager.h"
 #include "Proxy.h"
+#include "IntrospectionParser.h"
+#include "Skeleton.h"
 
 #endif // MBEDBUS_H

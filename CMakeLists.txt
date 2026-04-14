@@ -27,6 +27,8 @@ add_library(mbedbus
     src/Variant.cpp
     src/TypeTraits.cpp
     src/Introspection.cpp
+    src/IntrospectionParser.cpp
+    src/Skeleton.cpp
 )
 
 target_include_directories(mbedbus

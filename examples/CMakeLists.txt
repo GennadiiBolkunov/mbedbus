@@ -9,6 +9,7 @@ set(EXAMPLES
     signal_listener
     object_manager
     properties_monitor
+    skeleton_server
 )
 
 foreach(example ${EXAMPLES})

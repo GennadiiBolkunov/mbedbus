@@ -62,6 +62,9 @@ public:
     /// @brief Get all registered interfaces (for ObjectManager / introspection).
     const std::map<std::string, InterfaceData>& interfaces() const { return interfaces_; }
 
+    /// @brief Get mutable access to interfaces. For internal use by Skeleton.
+    std::map<std::string, InterfaceData>& mutableInterfaces() { return interfaces_; }
+
     /// @brief Get all properties for an interface as a map.
     std::map<std::string, Variant> getAllProperties(const std::string& iface) const;
 

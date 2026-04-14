@@ -54,3 +54,8 @@ add_executable(test_integration test_integration.cpp)
 target_link_libraries(test_integration mbedbus GTest::gtest_main)
 target_include_directories(test_integration PRIVATE ${DBUS_INCLUDE_DIRS})
 add_test(NAME Integration COMMAND test_integration)
+
+add_executable(test_skeleton test_skeleton.cpp)
+target_link_libraries(test_skeleton mbedbus GTest::gtest_main)
+target_include_directories(test_skeleton PRIVATE ${DBUS_INCLUDE_DIRS})
+add_test(NAME Skeleton COMMAND test_skeleton)
