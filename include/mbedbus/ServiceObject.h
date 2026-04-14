@@ -25,8 +25,7 @@ namespace mbedbus {
 class ServiceObject : public std::enable_shared_from_this<ServiceObject> {
 public:
     /// @brief Create a new ServiceObject on the given connection and path.
-    static std::shared_ptr<ServiceObject> create(std::shared_ptr<Connection> conn,
-                                                  const std::string& path);
+    static std::shared_ptr<ServiceObject> create(std::shared_ptr<Connection> conn, const std::string& path);
 
     ~ServiceObject();
 
@@ -39,10 +38,14 @@ public:
     /// @brief Finalize the object: register it on the bus and enable message handling.
     void finalize();
 
+    /// @brief Unregister the object from the bus. Safe to call multiple times.
+    /// After this call the destructor will not attempt to unregister again.
+    void unregister();
+
     /// @brief Emit a signal on the given interface.
     template<typename... Args>
     void emitSignal(const std::string& iface, const std::string& signalName,
-                    const Args&... args) {
+        const Args&... args) {
         Message sig = Message::createSignal(path_, iface, signalName);
         sig.appendArgs(args...);
         conn_->send(sig);
@@ -50,8 +53,8 @@ public:
 
     /// @brief Emit PropertiesChanged signal for the given interface.
     void emitPropertiesChanged(const std::string& iface,
-                               const std::map<std::string, Variant>& changed,
-                               const std::vector<std::string>& invalidated);
+        const std::map<std::string, Variant>& changed,
+        const std::vector<std::string>& invalidated);
 
     /// @brief Get the object path.
     const std::string& path() const { return path_; }
@@ -80,8 +83,7 @@ private:
     Message handlePeerPing(const Message& msg);
     Message handlePeerGetMachineId(const Message& msg);
 
-    static DBusHandlerResult messageHandler(DBusConnection* conn,
-                                            DBusMessage* msg, void* data);
+    static DBusHandlerResult messageHandler(DBusConnection* conn, DBusMessage* msg, void* data);
     static void unregisterHandler(DBusConnection* conn, void* data);
 
     std::shared_ptr<Connection> conn_;

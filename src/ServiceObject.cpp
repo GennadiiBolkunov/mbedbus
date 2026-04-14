@@ -12,13 +12,7 @@ ServiceObject::ServiceObject(std::shared_ptr<Connection> conn, const std::string
 {}
 
 ServiceObject::~ServiceObject() {
-    if (finalized_ && conn_) {
-        try {
-            conn_->unregisterObjectPath(path_);
-        } catch (...) {
-            MBEDBUS_LOG("Failed to unregister path in ~ServiceObject: %s", path_.c_str());
-        }
-    }
+    unregister();
 }
 
 std::shared_ptr<ServiceObject> ServiceObject::create(std::shared_ptr<Connection> conn,
@@ -42,6 +36,16 @@ void ServiceObject::finalize() {
     conn_->registerObjectPath(path_, vtable, this);
     finalized_ = true;
     MBEDBUS_LOG("Finalized object: %s", path_.c_str());
+}
+
+void ServiceObject::unregister() {
+    if (!finalized_ || !conn_) return;
+    finalized_ = false;
+    try {
+        conn_->unregisterObjectPath(path_);
+    } catch (...) {
+        MBEDBUS_LOG("Failed to unregister path: %s", path_.c_str());
+    }
 }
 
 void ServiceObject::emitPropertiesChanged(

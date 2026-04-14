@@ -59,19 +59,16 @@ void ObjectManager::removeChild(const std::string& path) {
         ifaceNames.push_back(kv.first);
     }
 
+    // Unregister the path and mark the ServiceObject so its destructor
+    // won't attempt a second unregister (the caller may still hold a shared_ptr).
+    it->second->unregister();
+
     children_.erase(it);
     updateChildNodes();
 
-    // Emit InterfacesRemoved (outside lock would be better, but simple is fine)
+    // Emit InterfacesRemoved
     if (!ifaceNames.empty()) {
         emitInterfacesRemoved(path, ifaceNames);
-    }
-
-    // Unregister the path
-    try {
-        conn_->unregisterObjectPath(path);
-    } catch (...) {
-        MBEDBUS_LOG("Failed to unregister path: %s", path.c_str());
     }
 
     MBEDBUS_LOG("Removed child: %s", path.c_str());
