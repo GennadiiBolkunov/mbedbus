@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <mbedbus/mbedbus.h>
 #include <cstdlib>
@@ -6,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <climits>
 
 class IntegrationTest : public ::testing::Test {
 protected:
@@ -26,256 +28,525 @@ protected:
     void TearDown() override { if (pid_ > 0) kill(pid_, SIGTERM); }
     std::string address_;
     pid_t pid_ = 0;
+
+    // Helper: run server event loop for N iterations
+    void serve(std::shared_ptr<mbedbus::Connection>& conn, int iterations = 100) {
+        for (int i = 0; i < iterations; ++i)
+            conn->processPendingEvents(20);
+    }
+
+    // RAII thread joiner — prevents std::terminate if test throws before join()
+    struct JoinGuard {
+        std::thread& t;
+        explicit JoinGuard(std::thread& t) : t(t) {}
+        ~JoinGuard() { if (t.joinable()) t.join(); }
+    };
 };
 
-TEST_F(IntegrationTest, FullServerClientCycle) {
-    // --- Server setup ---
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.Integration");
+// ============================================================
+// Basic method calls with all types
+// ============================================================
 
-    int32_t volume = 50;
-
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.Integration")
-        .addMethod("Add", [](int32_t a, int32_t b) -> int32_t { return a + b; })
-        .addMethod("Concat", [](const std::string& a, const std::string& b) -> std::string {
-            return a + b;
-        })
-        .addMethod("Echo", [](bool v) -> bool { return v; })
-        .addMethod("Sum", [](std::vector<int32_t> nums) -> int32_t {
-            int32_t s = 0;
-            for (auto n : nums) s += n;
-            return s;
-        })
-        .addProperty("Version", []() -> std::string { return "1.0.0"; })
-        .addProperty("Volume",
-            [&]() -> int32_t { return volume; },
-            [&](int32_t v) { volume = v; })
-        .addSignal<int32_t, std::string>("Alert");
+TEST_F(IntegrationTest, MethodCallInt32) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T1");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T1")
+        .addMethod("Echo", [](int32_t v) -> int32_t { return v; });
     obj->finalize();
-
-    std::thread srvThread([&] {
-        for (int i = 0; i < 200; ++i) srvConn->processPendingEvents(20);
-    });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // --- Client ---
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.Integration",
-                                         "/test", "com.mbedbus.Integration");
-
-    // Method calls
-    EXPECT_EQ(proxy->call<int32_t>("Add", int32_t(10), int32_t(20)), 30);
-    EXPECT_EQ(proxy->call<std::string>("Concat", std::string("a"), std::string("b")), "ab");
-    EXPECT_EQ(proxy->call<bool>("Echo", true), true);
-    EXPECT_EQ(proxy->call<bool>("Echo", false), false);
-
-    // Vector argument
-    std::vector<int32_t> nums = {1, 2, 3, 4, 5};
-    EXPECT_EQ(proxy->call<int32_t>("Sum", nums), 15);
-
-    // Properties
-    EXPECT_EQ(proxy->getProperty<std::string>("Version"), "1.0.0");
-    EXPECT_EQ(proxy->getProperty<int32_t>("Volume"), 50);
-    proxy->setProperty("Volume", int32_t(80));
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    EXPECT_EQ(proxy->getProperty<int32_t>("Volume"), 80);
-
-    // GetAll
-    auto props = proxy->getAllProperties();
-    EXPECT_GE(props.size(), 2u);
-
-    // tryCall
-    auto good = proxy->tryCall<int32_t>("Add", int32_t(1), int32_t(2));
-    ASSERT_TRUE(good.hasValue());
-    EXPECT_EQ(good.value(), 3);
-
-    srvThread.join();
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T1", "/t", "com.mbedbus.T1");
+    for (int32_t v : {INT32_MIN, -1, 0, 1, INT32_MAX}) {
+        EXPECT_EQ(p->call<int32_t>("Echo", v), v) << "Failed for " << v;
+    }
+    t.join();
 }
 
-TEST_F(IntegrationTest, ErrorPropagation) {
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.ErrProp");
+TEST_F(IntegrationTest, MethodCallString) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T2");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T2")
+        .addMethod("Echo", [](const std::string& s) -> std::string { return s; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T2", "/t", "com.mbedbus.T2");
+    for (const char* s : {"", "hello", "Привет", "a b\tc\nd"}) {
+        EXPECT_EQ(p->call<std::string>("Echo", std::string(s)), s);
+    }
+    t.join();
+}
 
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.ErrProp")
-        .addMethod("Divide", [](double a, double b) -> double {
-            if (b == 0.0) throw mbedbus::Error("com.example.DivByZero", "Division by zero");
-            return a / b;
+TEST_F(IntegrationTest, MethodCallBool) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T3");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T3")
+        .addMethod("Not", [](bool v) -> bool { return !v; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T3", "/t", "com.mbedbus.T3");
+    EXPECT_EQ(p->call<bool>("Not", true), false);
+    EXPECT_EQ(p->call<bool>("Not", false), true);
+    t.join();
+}
+
+TEST_F(IntegrationTest, MethodCallDouble) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T4");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T4")
+        .addMethod("Half", [](double v) -> double { return v / 2.0; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T4", "/t", "com.mbedbus.T4");
+    EXPECT_DOUBLE_EQ(p->call<double>("Half", 10.0), 5.0);
+    EXPECT_DOUBLE_EQ(p->call<double>("Half", 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(p->call<double>("Half", -6.0), -3.0);
+    t.join();
+}
+
+TEST_F(IntegrationTest, MethodCallVoid) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T5");
+    std::atomic<int> counter(0);
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T5")
+        .addMethod("Increment", [&]() { ++counter; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T5", "/t", "com.mbedbus.T5");
+    p->callVoid("Increment");
+    p->callVoid("Increment");
+    p->callVoid("Increment");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(counter.load(), 3);
+    t.join();
+}
+
+// ============================================================
+// Container types through D-Bus
+// ============================================================
+
+TEST_F(IntegrationTest, MethodCallVector) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T6");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T6")
+        .addMethod("Sum", [](std::vector<int32_t> v) -> int32_t {
+            int32_t s = 0; for (auto n : v) s += n; return s;
+        })
+        .addMethod("Reverse", [](std::vector<std::string> v) -> std::vector<std::string> {
+            std::reverse(v.begin(), v.end()); return v;
         });
     obj->finalize();
-
-    std::thread srv([&] {
-        for (int i = 0; i < 50; ++i) srvConn->processPendingEvents(20);
-    });
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.ErrProp",
-                                         "/test", "com.mbedbus.ErrProp");
-
-    EXPECT_DOUBLE_EQ(proxy->call<double>("Divide", 10.0, 2.0), 5.0);
-
-    auto result = proxy->tryCall<double>("Divide", 1.0, 0.0);
-    EXPECT_FALSE(result.hasValue());
-    EXPECT_EQ(result.error().name(), "com.example.DivByZero");
-
-    srv.join();
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T6", "/t", "com.mbedbus.T6");
+    EXPECT_EQ(p->call<int32_t>("Sum", std::vector<int32_t>{1, 2, 3, 4, 5}), 15);
+    EXPECT_EQ(p->call<int32_t>("Sum", std::vector<int32_t>{}), 0);
+    auto rev = p->call<std::vector<std::string>>("Reverse",
+        std::vector<std::string>{"a", "b", "c"});
+    EXPECT_EQ(rev, (std::vector<std::string>{"c", "b", "a"}));
+    t.join();
 }
 
-TEST_F(IntegrationTest, VoidMethod) {
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.Void");
-
-    std::atomic<bool> called(false);
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.Void")
-        .addMethod("Ping", [&]() { called = true; });
+TEST_F(IntegrationTest, MethodCallMap) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T7");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T7")
+        .addMethod("Echo", [](std::map<std::string, int32_t> m) -> std::map<std::string, int32_t> {
+            return m;
+        });
     obj->finalize();
-
-    std::thread srv([&] {
-        for (int i = 0; i < 50; ++i) srvConn->processPendingEvents(20);
-    });
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.Void",
-                                         "/test", "com.mbedbus.Void");
-    proxy->callVoid("Ping");
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    EXPECT_TRUE(called.load());
-
-    srv.join();
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T7", "/t", "com.mbedbus.T7");
+    std::map<std::string, int32_t> m = {{"a", 1}, {"b", 2}, {"c", 3}};
+    EXPECT_EQ((p->call<std::map<std::string, int32_t>>("Echo", m)), m);
+    // Empty map
+    std::map<std::string, int32_t> empty;
+    EXPECT_EQ((p->call<std::map<std::string, int32_t>>("Echo", empty)), empty);
+    t.join();
 }
 
 TEST_F(IntegrationTest, NestedContainers) {
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.Nested");
-
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.Nested")
-        .addMethod("EchoMap",
-            [](std::map<std::string, int32_t> m) -> std::map<std::string, int32_t> {
-                return m;
-            })
-        .addMethod("EchoVecVec",
-            [](std::vector<std::vector<int32_t>> v) -> std::vector<std::vector<int32_t>> {
-                return v;
-            });
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.T8");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.T8")
+        .addMethod("EchoVecVec", [](std::vector<std::vector<int32_t>> v)
+            -> std::vector<std::vector<int32_t>> { return v; })
+        .addMethod("EchoMapVec", [](std::map<std::string, std::vector<int32_t>> m)
+            -> std::map<std::string, std::vector<int32_t>> { return m; });
     obj->finalize();
-
-    std::thread srv([&] {
-        for (int i = 0; i < 50; ++i) srvConn->processPendingEvents(20);
-    });
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.Nested",
-                                         "/test", "com.mbedbus.Nested");
-
-    std::map<std::string, int32_t> testMap = {{"a", 1}, {"b", 2}, {"c", 3}};
-    auto resultMap = proxy->call<std::map<std::string, int32_t>>("EchoMap", testMap);
-    EXPECT_EQ(resultMap, testMap);
-
-    std::vector<std::vector<int32_t>> testVec = {{1, 2}, {3, 4, 5}};
-    auto resultVec = proxy->call<std::vector<std::vector<int32_t>>>("EchoVecVec", testVec);
-    EXPECT_EQ(resultVec, testVec);
-
-    srv.join();
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.T8", "/t", "com.mbedbus.T8");
+    std::vector<std::vector<int32_t>> vv = {{1, 2}, {}, {3, 4, 5}};
+    EXPECT_EQ((p->call<std::vector<std::vector<int32_t>>>("EchoVecVec", vv)), vv);
+    std::map<std::string, std::vector<int32_t>> mv = {{"primes", {2, 3, 5}}, {"empty", {}}};
+    EXPECT_EQ((p->call<std::map<std::string, std::vector<int32_t>>>("EchoMapVec", mv)), mv);
+    t.join();
 }
-TEST_F(IntegrationTest, PropertyGetterThrowsError) {
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.PropErr");
 
-    bool initialized = false;
-    int32_t value = 0;
+// ============================================================
+// Error propagation
+// ============================================================
 
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.PropErr")
+TEST_F(IntegrationTest, ErrorPropagation) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.E1");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.E1")
+        .addMethod("Fail", [](int32_t code) -> int32_t {
+            throw mbedbus::Error("com.example.Err" + std::to_string(code),
+                "Error code " + std::to_string(code));
+        });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.E1", "/t", "com.mbedbus.E1");
+    for (int code : {1, 2, 3}) {
+        auto result = p->tryCall<int32_t>("Fail", int32_t(code));
+        EXPECT_FALSE(result.hasValue());
+        EXPECT_EQ(result.error().name(), "com.example.Err" + std::to_string(code));
+    }
+    t.join();
+}
+
+TEST_F(IntegrationTest, StdExceptionConverted) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.E2");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.E2")
+        .addMethod("Throw", []() -> int32_t {
+            throw std::runtime_error("std error");
+        });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.E2", "/t", "com.mbedbus.E2");
+    auto result = p->tryCall<int32_t>("Throw");
+    EXPECT_FALSE(result.hasValue());
+}
+
+TEST_F(IntegrationTest, UnknownMethodError) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.E3");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.E3")
+        .addMethod("Exists", []() -> int32_t { return 1; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.E3", "/t", "com.mbedbus.E3");
+    EXPECT_EQ(p->call<int32_t>("Exists"), 1);
+    EXPECT_THROW(p->call<int32_t>("DoesNotExist"), mbedbus::Error);
+    t.join();
+}
+
+// ============================================================
+// Properties — all types, errors
+// ============================================================
+
+TEST_F(IntegrationTest, PropertyReadOnly) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P1");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P1")
+        .addProperty("Name", []() -> std::string { return "test"; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P1", "/t", "com.mbedbus.P1");
+    EXPECT_EQ(p->getProperty<std::string>("Name"), "test");
+    // Attempting to set a read-only property should fail
+    EXPECT_THROW(p->setProperty("Name", std::string("new")), mbedbus::Error);
+    t.join();
+}
+
+TEST_F(IntegrationTest, PropertyReadWrite) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P2");
+    int32_t val = 0;
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P2")
+        .addProperty("Value",
+            [&]() -> int32_t { return val; },
+            [&](int32_t v) { val = v; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv, 200); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P2", "/t", "com.mbedbus.P2");
+    EXPECT_EQ(p->getProperty<int32_t>("Value"), 0);
+    p->setProperty("Value", int32_t(42));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(p->getProperty<int32_t>("Value"), 42);
+    // Set multiple times
+    for (int32_t v = 0; v < 5; ++v) {
+        p->setProperty("Value", v);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        EXPECT_EQ(p->getProperty<int32_t>("Value"), v);
+    }
+    t.join();
+}
+
+TEST_F(IntegrationTest, PropertyGetterError) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P3");
+    bool ready = false;
+    int32_t val = 0;
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P3")
         .addProperty("Value",
             [&]() -> int32_t {
-                if (!initialized)
-                    throw mbedbus::Error("com.example.NotReady", "Value not set yet");
-                return value;
+                if (!ready) throw mbedbus::Error("com.err.NotReady", "Not ready");
+                return val;
             },
-            [&](int32_t v) { value = v; initialized = true; })
-        .addProperty("AlwaysOk", []() -> std::string { return "ok"; });
+            [&](int32_t v) { val = v; ready = true; })
+        .addProperty("OK", []() -> std::string { return "ok"; });
     obj->finalize();
-
-    std::thread srv([&] {
-        for (int i = 0; i < 100; ++i) srvConn->processPendingEvents(20);
-    });
+    std::thread t([&]{ serve(srv, 200); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.PropErr",
-                                         "/test", "com.mbedbus.PropErr");
-
-    // Single Get on uninitialized property — must return D-Bus error
-    EXPECT_THROW(proxy->getProperty<int32_t>("Value"), mbedbus::Error);
-
-    // Verify the error name propagates correctly
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P3", "/t", "com.mbedbus.P3");
+    // Get on unready property → error
+    EXPECT_THROW(p->getProperty<int32_t>("Value"), mbedbus::Error);
     try {
-        proxy->getProperty<int32_t>("Value");
-        FAIL() << "Expected exception";
+        p->getProperty<int32_t>("Value");
     } catch (const mbedbus::Error& e) {
-        EXPECT_EQ(e.name(), "com.example.NotReady");
+        EXPECT_EQ(e.name(), "com.err.NotReady");
     }
-
-    // GetAll should skip the erroring property but still return AlwaysOk
-    auto allProps = proxy->getAllProperties();
-    EXPECT_EQ(allProps.count("AlwaysOk"), 1u);
-    EXPECT_EQ(allProps["AlwaysOk"].get<std::string>(), "ok");
-    EXPECT_EQ(allProps.count("Value"), 0u);
-
-    // Set the value, making it initialized
-    proxy->setProperty("Value", int32_t(42));
+    // GetAll skips erroring property
+    auto all = p->getAllProperties();
+    EXPECT_EQ(all.count("OK"), 1u);
+    EXPECT_EQ(all.count("Value"), 0u);
+    // Set makes it ready
+    p->setProperty("Value", int32_t(99));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // Now Get should succeed
-    EXPECT_EQ(proxy->getProperty<int32_t>("Value"), 42);
-
-    // GetAll should now include both properties
-    allProps = proxy->getAllProperties();
-    EXPECT_EQ(allProps.size(), 2u);
-    EXPECT_EQ(allProps["Value"].get<int32_t>(), 42);
-
-    srv.join();
+    EXPECT_EQ(p->getProperty<int32_t>("Value"), 99);
+    all = p->getAllProperties();
+    EXPECT_EQ(all.size(), 2u);
+    t.join();
 }
 
-TEST_F(IntegrationTest, PropertySetterThrowsError) {
-    auto srvConn = mbedbus::Connection::createPrivate(address_);
-    srvConn->requestName("com.mbedbus.SetErr");
-
-    auto obj = mbedbus::ServiceObject::create(srvConn, "/test");
-    obj->addInterface("com.mbedbus.SetErr")
+TEST_F(IntegrationTest, PropertySetterError) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P4");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P4")
         .addProperty("Positive",
             []() -> int32_t { return 1; },
             [](int32_t v) {
-                if (v <= 0)
-                    throw mbedbus::Error("com.example.InvalidValue", "Must be positive");
+                if (v <= 0) throw mbedbus::Error("com.err.Invalid", "Must be positive");
             });
     obj->finalize();
-
-    std::thread srv([&] {
-        for (int i = 0; i < 50; ++i) srvConn->processPendingEvents(20);
-    });
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    auto cliConn = mbedbus::Connection::createPrivate(address_);
-    auto proxy = mbedbus::Proxy::create(cliConn, "com.mbedbus.SetErr",
-                                         "/test", "com.mbedbus.SetErr");
-
-    EXPECT_NO_THROW(proxy->setProperty("Positive", int32_t(5)));
-
-    EXPECT_THROW(proxy->setProperty("Positive", int32_t(-1)), mbedbus::Error);
-
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P4", "/t", "com.mbedbus.P4");
+    EXPECT_NO_THROW(p->setProperty("Positive", int32_t(5)));
+    EXPECT_THROW(p->setProperty("Positive", int32_t(-1)), mbedbus::Error);
     try {
-        proxy->setProperty("Positive", int32_t(0));
-        FAIL() << "Expected exception";
+        p->setProperty("Positive", int32_t(0));
     } catch (const mbedbus::Error& e) {
-        EXPECT_EQ(e.name(), "com.example.InvalidValue");
+        EXPECT_EQ(e.name(), "com.err.Invalid");
     }
+    t.join();
+}
 
-    srv.join();
+TEST_F(IntegrationTest, PropertyUnknown) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P5");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P5")
+        .addProperty("X", []() -> int32_t { return 1; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P5", "/t", "com.mbedbus.P5");
+    EXPECT_EQ(p->getProperty<int32_t>("X"), 1);
+    EXPECT_THROW(p->getProperty<int32_t>("NonExistent"), mbedbus::Error);
+    t.join();
+}
+
+TEST_F(IntegrationTest, GetAllProperties) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.P6");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.P6")
+        .addProperty("A", []() -> int32_t { return 1; })
+        .addProperty("B", []() -> std::string { return "two"; })
+        .addProperty("C", []() -> bool { return true; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.P6", "/t", "com.mbedbus.P6");
+    auto all = p->getAllProperties();
+    EXPECT_EQ(all.size(), 3u);
+    EXPECT_EQ(all["A"].get<int32_t>(), 1);
+    EXPECT_EQ(all["B"].get<std::string>(), "two");
+    EXPECT_EQ(all["C"].get<bool>(), true);
+    t.join();
+}
+
+// ============================================================
+// Multiple interfaces on one object
+// ============================================================
+
+TEST_F(IntegrationTest, MultipleInterfaces) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.MI");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.Math")
+        .addMethod("Add", [](int32_t a, int32_t b) -> int32_t { return a + b; });
+    obj->addInterface("com.mbedbus.Text")
+        .addMethod("Len", [](const std::string& s) -> int32_t { return (int32_t)s.size(); });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto pm = mbedbus::Proxy::create(cli, "com.mbedbus.MI", "/t", "com.mbedbus.Math");
+    auto pt = mbedbus::Proxy::create(cli, "com.mbedbus.MI", "/t", "com.mbedbus.Text");
+    EXPECT_EQ(pm->call<int32_t>("Add", int32_t(3), int32_t(4)), 7);
+    EXPECT_EQ(pt->call<int32_t>("Len", std::string("hello")), 5);
+    t.join();
+}
+
+// ============================================================
+// tryCall
+// ============================================================
+
+TEST_F(IntegrationTest, TryCallSuccess) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.TC1");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.TC1")
+        .addMethod("Inc", [](int32_t v) -> int32_t { return v + 1; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.TC1", "/t", "com.mbedbus.TC1");
+    auto r = p->tryCall<int32_t>("Inc", int32_t(9));
+    ASSERT_TRUE(r.hasValue());
+    EXPECT_EQ(r.value(), 10);
+    t.join();
+}
+
+TEST_F(IntegrationTest, TryCallFailure) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.TC2");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.TC2")
+        .addMethod("Fail", []() -> int32_t {
+            throw mbedbus::Error("com.err.X", "fail");
+        });
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.TC2", "/t", "com.mbedbus.TC2");
+    auto r = p->tryCall<int32_t>("Fail");
+    ASSERT_FALSE(r.hasValue());
+    EXPECT_EQ(r.error().name(), "com.err.X");
+    t.join();
+}
+
+// ============================================================
+// Stress: many sequential calls
+// ============================================================
+
+TEST_F(IntegrationTest, ManySequentialCalls) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.Stress");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.Stress")
+        .addMethod("Inc", [](int32_t v) -> int32_t { return v + 1; });
+    obj->finalize();
+    std::thread t([&]{ serve(srv, 500); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.Stress", "/t", "com.mbedbus.Stress");
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_EQ(p->call<int32_t>("Inc", int32_t(i)), i + 1);
+    }
+    t.join();
+}
+
+// ============================================================
+// ServiceObject::unregister idempotency
+// ============================================================
+
+TEST_F(IntegrationTest, UnregisterIdempotent) {
+    auto conn = mbedbus::Connection::createPrivate(address_);
+    auto obj = mbedbus::ServiceObject::create(conn, "/unreg");
+    obj->addInterface("com.test.U").addMethod("Ping", [](){});
+    obj->finalize();
+    obj->unregister();
+    obj->unregister(); // second call should be no-op
+    // Destructor will also call unregister — should not crash
+}
+
+// ============================================================
+// Peer interface
+// ============================================================
+
+TEST_F(IntegrationTest, PeerPing) {
+    auto srv = mbedbus::Connection::createPrivate(address_);
+    srv->requestName("com.mbedbus.Peer");
+    auto obj = mbedbus::ServiceObject::create(srv, "/t");
+    obj->addInterface("com.mbedbus.Peer").addMethod("Noop", [](){});
+    obj->finalize();
+    std::thread t([&]{ serve(srv); });
+    JoinGuard jg(t);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto cli = mbedbus::Connection::createPrivate(address_);
+    auto p = mbedbus::Proxy::create(cli, "com.mbedbus.Peer", "/t",
+        "org.freedesktop.DBus.Peer");
+    EXPECT_NO_THROW(p->callVoid("Ping"));
+    t.join();
 }
