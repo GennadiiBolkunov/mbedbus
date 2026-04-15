@@ -62,17 +62,53 @@ std::string ServiceObject::introspect() const {
         auto& iface = kv.second;
         xml << "  <interface name=\"" << iface.name << "\">\n";
 
+        // Interface-level annotations
+        for (auto& ann : iface.annotations) {
+            xml << "    <annotation name=\"" << ann.first
+                << "\" value=\"" << ann.second << "\"/>\n";
+        }
+
         for (auto& method : iface.methods) {
-            xml << "    <method name=\"" << method.name << "\">\n";
-            for (auto& arg : method.inArgs) {
-                xml << "      <arg name=\"" << arg.first
-                    << "\" type=\"" << arg.second << "\" direction=\"in\"/>\n";
+            bool hasContent = !method.inArgs.empty() || !method.outArgs.empty()
+                              || !method.annotations.empty();
+            if (!hasContent) {
+                xml << "    <method name=\"" << method.name << "\"/>\n";
+            } else {
+                xml << "    <method name=\"" << method.name << "\">\n";
+                for (auto& arg : method.inArgs) {
+                    if (arg.annotations.empty()) {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\" direction=\"in\"/>\n";
+                    } else {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\" direction=\"in\">\n";
+                        for (auto& ann : arg.annotations) {
+                            xml << "        <annotation name=\"" << ann.first
+                                << "\" value=\"" << ann.second << "\"/>\n";
+                        }
+                        xml << "      </arg>\n";
+                    }
+                }
+                for (auto& arg : method.outArgs) {
+                    if (arg.annotations.empty()) {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\" direction=\"out\"/>\n";
+                    } else {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\" direction=\"out\">\n";
+                        for (auto& ann : arg.annotations) {
+                            xml << "        <annotation name=\"" << ann.first
+                                << "\" value=\"" << ann.second << "\"/>\n";
+                        }
+                        xml << "      </arg>\n";
+                    }
+                }
+                for (auto& ann : method.annotations) {
+                    xml << "      <annotation name=\"" << ann.first
+                        << "\" value=\"" << ann.second << "\"/>\n";
+                }
+                xml << "    </method>\n";
             }
-            for (auto& arg : method.outArgs) {
-                xml << "      <arg name=\"" << arg.first
-                    << "\" type=\"" << arg.second << "\" direction=\"out\"/>\n";
-            }
-            xml << "    </method>\n";
         }
 
         for (auto& prop : iface.properties) {
@@ -80,18 +116,48 @@ std::string ServiceObject::introspect() const {
             if (prop.readable && prop.writable) access = "readwrite";
             else if (prop.readable) access = "read";
             else access = "write";
-            xml << "    <property name=\"" << prop.name
-                << "\" type=\"" << prop.signature
-                << "\" access=\"" << access << "\"/>\n";
+            if (prop.annotations.empty()) {
+                xml << "    <property name=\"" << prop.name
+                    << "\" type=\"" << prop.signature
+                    << "\" access=\"" << access << "\"/>\n";
+            } else {
+                xml << "    <property name=\"" << prop.name
+                    << "\" type=\"" << prop.signature
+                    << "\" access=\"" << access << "\">\n";
+                for (auto& ann : prop.annotations) {
+                    xml << "      <annotation name=\"" << ann.first
+                        << "\" value=\"" << ann.second << "\"/>\n";
+                }
+                xml << "    </property>\n";
+            }
         }
 
         for (auto& sig : iface.signals) {
-            xml << "    <signal name=\"" << sig.name << "\">\n";
-            for (auto& arg : sig.args) {
-                xml << "      <arg name=\"" << arg.first
-                    << "\" type=\"" << arg.second << "\"/>\n";
+            bool hasContent = !sig.args.empty() || !sig.annotations.empty();
+            if (!hasContent) {
+                xml << "    <signal name=\"" << sig.name << "\"/>\n";
+            } else {
+                xml << "    <signal name=\"" << sig.name << "\">\n";
+                for (auto& arg : sig.args) {
+                    if (arg.annotations.empty()) {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\"/>\n";
+                    } else {
+                        xml << "      <arg name=\"" << arg.name
+                            << "\" type=\"" << arg.signature << "\">\n";
+                        for (auto& ann : arg.annotations) {
+                            xml << "        <annotation name=\"" << ann.first
+                                << "\" value=\"" << ann.second << "\"/>\n";
+                        }
+                        xml << "      </arg>\n";
+                    }
+                }
+                for (auto& ann : sig.annotations) {
+                    xml << "      <annotation name=\"" << ann.first
+                        << "\" value=\"" << ann.second << "\"/>\n";
+                }
+                xml << "    </signal>\n";
             }
-            xml << "    </signal>\n";
         }
 
         xml << "  </interface>\n";

@@ -60,6 +60,9 @@ namespace mbedbus {
                 iface.name == "org.freedesktop.DBus.ObjectManager")
                 continue;
 
+            auto& ifaceData = obj_->mutableInterfaces()[iface.name];
+            ifaceData.name = iface.name;
+            ifaceData.annotations.insert(iface.annotations.begin(), iface.annotations.end());
 
             // Register methods
             for (auto& method : iface.methods) {
@@ -77,7 +80,6 @@ namespace mbedbus {
                         throw Error("com.mbedbus.Error",
                             "No handler bound for method " + iface.name + "." + method.name);
                     }
-                    // Lenient: stub that returns NotImplemented
                     std::string fullName = iface.name + "." + method.name;
                     handler = [fullName](const Message& call) -> Message {
                         return Message::createError(call,
@@ -86,26 +88,16 @@ namespace mbedbus {
                     };
                 }
 
-                // We need to add the method via the low-level InterfaceBuilder path.
-                // Since InterfaceBuilder::addMethod expects a lambda with typed args,
-                // and we have a raw handler, we use a workaround: register a lambda
-                // that receives no args and internally delegates to the raw handler.
-                // But this won't work because the message dispatcher matches by name.
-                // Instead, we add the method data directly.
-                // The handler is already in the right form: Message(const Message&).
                 MethodInfo mi;
                 mi.name = method.name;
                 mi.inputSig = method.inputSignature();
                 mi.outputSig = method.outputSignature();
                 mi.handler = handler;
+                mi.annotations = method.annotations;
                 for (auto& a : method.inArgs)
-                    mi.inArgs.emplace_back(std::make_pair(a.name, a.signature));
+                    mi.inArgs.push_back(ArgInfo{a.name, a.signature, a.annotations});
                 for (auto& a : method.outArgs)
-                    mi.outArgs.emplace_back(std::make_pair(a.name, a.signature));
-                // Access internal interface data directly
-                auto& ifaceData = obj_->mutableInterfaces()[iface.name];
-                obj_->mutableInterfaces()[iface.name];
-                ifaceData.name = iface.name;
+                    mi.outArgs.push_back(ArgInfo{a.name, a.signature, a.annotations});
                 ifaceData.methods.push_back(std::move(mi));
             }
 
@@ -118,6 +110,7 @@ namespace mbedbus {
                                prop.access == PropertyAccess::ReadWrite);
                 pi.writable = (prop.access == PropertyAccess::Write ||
                                prop.access == PropertyAccess::ReadWrite);
+                pi.annotations = prop.annotations;
 
                 auto bindIt = propertyBindings_.find(iface.name);
                 if (bindIt != propertyBindings_.end()) {
@@ -154,9 +147,6 @@ namespace mbedbus {
                     };
                 }
 
-                auto& ifaceData = obj_->mutableInterfaces()[iface.name];
-                obj_->mutableInterfaces()[iface.name];
-                ifaceData.name = iface.name;
                 ifaceData.properties.push_back(std::move(pi));
             }
 
@@ -165,10 +155,9 @@ namespace mbedbus {
                 SignalInfo si;
                 si.name = sig.name;
                 si.signature = sig.signature();
+                si.annotations = sig.annotations;
                 for (auto& a : sig.args)
-                    si.args.emplace_back(std::make_pair(a.name, a.signature));
-                auto& ifaceData = obj_->mutableInterfaces()[iface.name];
-                obj_->mutableInterfaces()[iface.name];
+                    si.args.push_back(ArgInfo{a.name, a.signature, a.annotations});
                 ifaceData.signals.push_back(std::move(si));
             }
         }

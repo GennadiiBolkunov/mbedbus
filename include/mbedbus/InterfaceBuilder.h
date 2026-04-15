@@ -24,15 +24,25 @@ namespace mbedbus {
 // Forward declarations
 class ServiceObject;
 
+/// @brief Annotations map (name -> value).
+using Annotations = std::map<std::string, std::string>;
+
+/// @brief Metadata for a method/signal argument.
+struct ArgInfo {
+    std::string name;
+    std::string signature;
+    Annotations annotations;
+};
+
 /// @brief Metadata for a registered method.
 struct MethodInfo {
     std::string name;
     std::string inputSig;
     std::string outputSig;
     std::function<Message(const Message&)> handler;
-    /// Argument names for introspection (in then out).
-    std::vector<std::pair<std::string, std::string>> inArgs;  // name, signature
-    std::vector<std::pair<std::string, std::string>> outArgs; // name, signature
+    std::vector<ArgInfo> inArgs;
+    std::vector<ArgInfo> outArgs;
+    Annotations annotations;
 };
 
 /// @brief Metadata for a registered property.
@@ -43,13 +53,15 @@ struct PropertyInfo {
     std::function<void(const Variant&)> setter;      // nullptr if read-only
     bool readable;
     bool writable;
+    Annotations annotations;
 };
 
 /// @brief Metadata for a registered signal.
 struct SignalInfo {
     std::string name;
     std::string signature;
-    std::vector<std::pair<std::string, std::string>> args; // name, signature
+    std::vector<ArgInfo> args;
+    Annotations annotations;
 };
 
 /// @brief Holds all methods, properties, and signals for one D-Bus interface.
@@ -58,6 +70,7 @@ struct InterfaceData {
     std::vector<MethodInfo> methods;
     std::vector<PropertyInfo> properties;
     std::vector<SignalInfo> signals;
+    Annotations annotations;
 };
 
 // ============================================================
@@ -67,115 +80,114 @@ struct InterfaceData {
 namespace detail {
 
 // Extract function traits from lambdas/function objects
-template<typename T>
-struct FunctionTraits : FunctionTraits<decltype(&T::operator())> {};
+    template<typename T>
+    struct FunctionTraits : FunctionTraits<decltype(&T::operator())> {};
 
-template<typename R, typename... Args>
-struct FunctionTraits<R(Args...)> {
-    using ReturnType = R;
-    using ArgsTuple = std::tuple<typename std::decay<Args>::type...>;
-    static constexpr std::size_t arity = sizeof...(Args);
-};
+    template<typename R, typename... Args>
+    struct FunctionTraits<R(Args...)> {
+        using ReturnType = R;
+        using ArgsTuple = std::tuple<typename std::decay<Args>::type...>;
+        static constexpr std::size_t arity = sizeof...(Args);
+    };
 
-template<typename R, typename... Args>
-struct FunctionTraits<R(*)(Args...)> : FunctionTraits<R(Args...)> {};
+    template<typename R, typename... Args>
+    struct FunctionTraits<R(*)(Args...)> : FunctionTraits<R(Args...)> {};
 
-template<typename C, typename R, typename... Args>
-struct FunctionTraits<R(C::*)(Args...) const> : FunctionTraits<R(Args...)> {};
+    template<typename C, typename R, typename... Args>
+    struct FunctionTraits<R(C::*)(Args...) const> : FunctionTraits<R(Args...)> {};
 
-template<typename C, typename R, typename... Args>
-struct FunctionTraits<R(C::*)(Args...)> : FunctionTraits<R(Args...)> {};
+    template<typename C, typename R, typename... Args>
+    struct FunctionTraits<R(C::*)(Args...)> : FunctionTraits<R(Args...)> {};
 
 // Call a function with arguments extracted from a tuple
-template<typename F, typename Tuple, std::size_t... I>
-auto applyImpl(F&& f, Tuple&& t, std::index_sequence<I...>)
+    template<typename F, typename Tuple, std::size_t... I>
+    auto applyImpl(F&& f, Tuple&& t, std::index_sequence<I...>)
     -> decltype(f(std::get<I>(std::forward<Tuple>(t))...))
-{
-    return f(std::get<I>(std::forward<Tuple>(t))...);
-}
+    {
+        return f(std::get<I>(std::forward<Tuple>(t))...);
+    }
 
-template<typename F, typename Tuple>
-auto apply(F&& f, Tuple&& t)
+    template<typename F, typename Tuple>
+    auto apply(F&& f, Tuple&& t)
     -> decltype(applyImpl(std::forward<F>(f), std::forward<Tuple>(t),
-                          std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{}))
-{
-    return applyImpl(std::forward<F>(f), std::forward<Tuple>(t),
-        std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{});
-}
+        std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{}))
+    {
+        return applyImpl(std::forward<F>(f), std::forward<Tuple>(t),
+            std::make_index_sequence<std::tuple_size<typename std::decay<Tuple>::type>::value>{});
+    }
 
 // Build input signatures from Args tuple
-template<typename Tuple, std::size_t... I>
-std::vector<std::pair<std::string, std::string>> buildArgInfoImpl(std::index_sequence<I...>) {
-    std::vector<std::pair<std::string, std::string>> result;
-    // We use generic arg names
-    using dummy = int[];
-    (void)dummy{0, (result.emplace_back(std::make_pair("arg" + std::to_string(I),
-        types::Traits<typename std::tuple_element<I, Tuple>::type>::signature())), 0)...};
-    return result;
-}
+    template<typename Tuple, std::size_t... I>
+    std::vector<ArgInfo> buildArgInfoImpl(std::index_sequence<I...>) {
+        std::vector<ArgInfo> result;
+        using dummy = int[];
+        (void)dummy{0, (result.push_back(ArgInfo{"arg" + std::to_string(I),
+                                                 types::Traits<typename std::tuple_element<I, Tuple>::type>::signature(), {}}), 0)...};
+        return result;
+    }
 
-template<typename... Args>
-std::vector<std::pair<std::string, std::string>> buildArgInfo() {
-    return buildArgInfoImpl<std::tuple<Args...>>(std::index_sequence_for<Args...>{});
-}
+    template<typename... Args>
+    std::vector<ArgInfo> buildArgInfo() {
+        return buildArgInfoImpl<std::tuple<Args...>>(std::index_sequence_for<Args...>{});
+    }
 
 // Wrap a user function into std::function<Message(const Message&)>
 // For non-void return types
-template<typename F, typename R, typename ArgsTuple>
-struct MethodWrapper;
+    template<typename F, typename R, typename ArgsTuple>
+    struct MethodWrapper;
 
-template<typename F, typename R, typename... Args>
-struct MethodWrapper<F, R, std::tuple<Args...>> {
-    static std::function<Message(const Message&)> wrap(F fn) {
-        return [fn](const Message& call) -> Message {
-            DBusMessageIter iter;
-            dbus_message_iter_init(call.raw(), &iter);
-            auto args = types::deserializeArgs<Args...>(iter);
-            R result = detail::apply(fn, std::move(args));
-            Message reply = Message::createMethodReturn(call);
-            reply.appendArgs(result);
-            return reply;
-        };
-    }
-};
+    template<typename F, typename R, typename... Args>
+    struct MethodWrapper<F, R, std::tuple<Args...>> {
+        static std::function<Message(const Message&)> wrap(F fn) {
+            return [fn](const Message& call) -> Message {
+                DBusMessageIter iter;
+                dbus_message_iter_init(call.raw(), &iter);
+                auto args = types::deserializeArgs<Args...>(iter);
+                R result = detail::apply(fn, std::move(args));
+                Message reply = Message::createMethodReturn(call);
+                reply.appendArgs(result);
+                return reply;
+            };
+        }
+    };
 
 // Specialization for void return
-template<typename F, typename... Args>
-struct MethodWrapper<F, void, std::tuple<Args...>> {
-    static std::function<Message(const Message&)> wrap(F fn) {
-        return [fn](const Message& call) -> Message {
-            DBusMessageIter iter;
-            dbus_message_iter_init(call.raw(), &iter);
-            auto args = types::deserializeArgs<Args...>(iter);
-            detail::apply(fn, std::move(args));
-            return Message::createMethodReturn(call);
-        };
-    }
-};
+    template<typename F, typename... Args>
+    struct MethodWrapper<F, void, std::tuple<Args...>> {
+        static std::function<Message(const Message&)> wrap(F fn) {
+            return [fn](const Message& call) -> Message {
+                DBusMessageIter iter;
+                dbus_message_iter_init(call.raw(), &iter);
+                auto args = types::deserializeArgs<Args...>(iter);
+                detail::apply(fn, std::move(args));
+                return Message::createMethodReturn(call);
+            };
+        }
+    };
 
 // Specialization for no args, non-void return
-template<typename F, typename R>
-struct MethodWrapper<F, R, std::tuple<>> {
-    static std::function<Message(const Message&)> wrap(F fn) {
-        return [fn](const Message& call) -> Message {
-            R result = fn();
-            Message reply = Message::createMethodReturn(call);
-            reply.appendArgs(result);
-            return reply;
-        };
-    }
-};
+    template<typename F, typename R>
+    struct MethodWrapper<F, R, std::tuple<>> {
+        static std::function<Message(const Message&)> wrap(F fn) {
+            return [fn](const Message& call) -> Message {
+                R result = fn();
+                Message reply = Message::createMethodReturn(call);
+                reply.appendArgs(result);
+                return reply;
+            };
+        }
+    };
 
 // Specialization for no args, void return
-template<typename F>
-struct MethodWrapper<F, void, std::tuple<>> {
-    static std::function<Message(const Message&)> wrap(F fn) {
-        return [fn](const Message& call) -> Message {
-            fn();
-            return Message::createMethodReturn(call);
-        };
-    }
-};
+    template<typename F>
+    struct MethodWrapper<F, void, std::tuple<>> {
+        static std::function<Message(const Message&)> wrap(F fn) {
+            return [fn](const Message& call) -> Message {
+                fn();
+                return Message::createMethodReturn(call);
+            };
+        }
+    };
 
 } // namespace detail
 
@@ -271,25 +283,25 @@ private:
     buildOutputSig() { return ""; }
 
     template<typename Tuple, std::size_t... I>
-    static std::vector<std::pair<std::string, std::string>>
+    static std::vector<ArgInfo>
     buildInArgs(std::index_sequence<I...>) {
-        std::vector<std::pair<std::string, std::string>> result;
+        std::vector<ArgInfo> result;
         using dummy = int[];
-        (void)dummy{0, (result.emplace_back(std::make_pair("arg" + std::to_string(I),
-            types::Traits<typename std::tuple_element<I, Tuple>::type>::signature())), 0)...};
+        (void)dummy{0, (result.push_back(ArgInfo{"arg" + std::to_string(I),
+                                                 types::Traits<typename std::tuple_element<I, Tuple>::type>::signature(), {}}), 0)...};
         return result;
     }
 
     template<typename R>
     static typename std::enable_if<!std::is_void<R>::value,
-        std::vector<std::pair<std::string, std::string>>>::type
+        std::vector<ArgInfo>>::type
     buildOutArgs() {
-        return {{"result", types::Traits<R>::signature()}};
+        return {ArgInfo{"result", types::Traits<R>::signature(), {}}};
     }
 
     template<typename R>
     static typename std::enable_if<std::is_void<R>::value,
-        std::vector<std::pair<std::string, std::string>>>::type
+        std::vector<ArgInfo>>::type
     buildOutArgs() { return {}; }
 
     InterfaceData& data_;
